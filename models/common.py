@@ -2,7 +2,7 @@
 """
 Common modules
 """
-
+import ctypes
 import json
 import math
 import platform
@@ -277,7 +277,7 @@ class Concat(nn.Module):
 
 class DetectMultiBackend(nn.Module):
     # YOLOv5 MultiBackend class for python inference on various backends
-    def __init__(self, weights='yolov5s.pt', device=None, dnn=False, data=None):
+    def __init__(self, weights='yolov5s.pt', device=None, dnn=False, data=None, trt_plugins=None):
         # Usage:
         #   PyTorch:      weights = *.pt
         #   TorchScript:            *.torchscript
@@ -337,8 +337,12 @@ class DetectMultiBackend(nn.Module):
             LOGGER.info(f'Loading {w} for TensorRT inference...')
             import tensorrt as trt  # https://developer.nvidia.com/nvidia-tensorrt-download
             check_version(trt.__version__, '7.0.0', hard=True)  # require tensorrt>=7.0.0
-            Binding = namedtuple('Binding', ('name', 'dtype', 'shape', 'data', 'ptr'))
+            if trt_plugins is not None:
+                for plug in trt_plugins:
+                    ctypes.CDLL(plug)
             logger = trt.Logger(trt.Logger.INFO)
+            trt.init_libnvinfer_plugins(logger, '')
+            Binding = namedtuple('Binding', ('name', 'dtype', 'shape', 'data', 'ptr'))
             with open(w, 'rb') as f, trt.Runtime(logger) as runtime:
                 model = runtime.deserialize_cuda_engine(f.read())
             bindings = OrderedDict()
