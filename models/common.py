@@ -277,7 +277,7 @@ class Concat(nn.Module):
 
 class DetectMultiBackend(nn.Module):
     # YOLOv5 MultiBackend class for python inference on various backends
-    def __init__(self, weights='yolov5s.pt', device=None, dnn=False, data=None, trt_plugins=None):
+    def __init__(self, weights='yolov5s.pt', device=None, dnn=False, data=None, trt_plugins=None, use_tensorrtx=False):
         # Usage:
         #   PyTorch:      weights = *.pt
         #   TorchScript:            *.torchscript
@@ -343,6 +343,7 @@ class DetectMultiBackend(nn.Module):
             logger = trt.Logger(trt.Logger.INFO)
             trt.init_libnvinfer_plugins(logger, '')
             Binding = namedtuple('Binding', ('name', 'dtype', 'shape', 'data', 'ptr'))
+
             with open(w, 'rb') as f, trt.Runtime(logger) as runtime:
                 model = runtime.deserialize_cuda_engine(f.read())
             bindings = OrderedDict()
@@ -354,7 +355,15 @@ class DetectMultiBackend(nn.Module):
                 bindings[name] = Binding(name, dtype, shape, data, int(data.data_ptr()))
             binding_addrs = OrderedDict((n, d.ptr) for n, d in bindings.items())
             context = model.create_execution_context()
-            batch_size = bindings['images'].shape[0]
+
+            if use_tensorrtx:
+                trt_input_name = 'data'
+                trt_output_name = 'prob'
+                batch_size = model.max_batch_size  # tensorrtx yolov5 model used implicit batch dim
+            else:
+                trt_input_name = 'images'
+                trt_output_name = 'output'
+                batch_size = bindings[trt_input_name].shape[0]  # yolov5 model used explicit batch dim by-default
         elif coreml:  # CoreML
             LOGGER.info(f'Loading {w} for CoreML inference...')
             import coremltools as ct
@@ -417,10 +426,36 @@ class DetectMultiBackend(nn.Module):
             request.infer()
             y = request.output_blobs['output'].buffer  # name=next(iter(request.output_blobs))
         elif self.engine:  # TensorRT
-            assert im.shape == self.bindings['images'].shape, (im.shape, self.bindings['images'].shape)
-            self.binding_addrs['images'] = int(im.data_ptr())
-            self.context.execute_v2(list(self.binding_addrs.values()))
-            y = self.bindings['output'].data
+            if self.use_tensorrtx:
+                im = torch.reshape(im, (im.shape[1], im.shape[2], im.shape[3]))
+                assert im.shape == self.bindings[self.trt_input_name].shape, (
+                    im.shape, self.bindings[self.trt_input_name].shape
+                )
+            else:
+                assert im.shape == self.bindings[self.trt_input_name].shape, (
+                    im.shape, self.bindings[self.trt_input_name].shape
+                )
+
+            self.binding_addrs[self.trt_input_name] = int(im.data_ptr())
+
+            if self.use_tensorrtx:
+                # implicit exec
+                self.context.execute(batch_size=1, bindings=list(self.binding_addrs.values()))
+                y = self.bindings[self.trt_output_name].data
+
+                # adapt tensorrtx yolov5 pred data to this impl
+                y_np = y.cpu().numpy().squeeze()
+                # out_reshaped = y_np[1:].reshape(-1, 6)  # full output
+                out_reshaped = y_np[1:].reshape(-1, 6)[:int(y_np[0]), :]  # postproc output from tensorrtx yolov5
+                out_base = out_reshaped[:, 0:5]
+                targets = out_reshaped[:, 5].reshape(-1)
+                one_hot_targets = np.eye(len(self.names))[targets.astype(np.int32)]
+                out = np.concatenate((out_base, one_hot_targets), axis=1)[np.newaxis, ...]
+                y = torch.from_numpy(out).to(self.device)
+            else:
+                # explicit exec
+                self.context.execute_v2(bindings=list(self.binding_addrs.values()))
+                y = self.bindings[self.trt_output_name].data
         elif self.coreml:  # CoreML
             im = im.permute(0, 2, 3, 1).cpu().numpy()  # torch BCHW to numpy BHWC shape(1,320,192,3)
             im = Image.fromarray((im[0] * 255).astype('uint8'))
