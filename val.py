@@ -143,7 +143,10 @@ def run(data,
         if pt or jit:
             model.model.half() if half else model.model.float()
         elif engine:
-            batch_size = model.batch_size
+            if batch_size != model.batch_size:
+                LOGGER.info(f'Assigned and model batch size not equal: {batch_size} != {model.batch_size}.'
+                            f'Forcing --batch-size {model.batch_size}')
+                batch_size = model.batch_size
         else:
             half = False
             batch_size = 1  # export.py models default to batch-size 1
