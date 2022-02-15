@@ -432,9 +432,11 @@ class DetectMultiBackend(nn.Module):
             #   approaches: drop last invalid batch, expand invalid batch to assigned batch size
             # * for tensorrt with dynamic batch size it is ok
             if self.use_tensorrtx:
-                im = torch.reshape(im, (im.shape[1], im.shape[2], im.shape[3]))
-                assert im.shape == self.bindings[self.trt_input_name].shape, (
-                    im.shape, self.bindings[self.trt_input_name].shape
+                # tensorrtx use implicit batch size dim
+                # im = torch.reshape(im, (im.shape[1], im.shape[2], im.shape[3]))
+                input_shape = (im.shape[1], im.shape[2], im.shape[3])
+                assert input_shape == self.bindings[self.trt_input_name].shape, (
+                    input_shape, self.bindings[self.trt_input_name].shape
                 )
             else:
                 assert im.shape == self.bindings[self.trt_input_name].shape, (
