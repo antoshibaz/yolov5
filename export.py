@@ -197,6 +197,26 @@ def export_engine(model, im, file, train, half, simplify, workspace=4, verbose=F
         check_requirements(('tensorrt',))
         import tensorrt as trt
 
+        LOGGER.info(f'\n{prefix} starting export with TensorRT {trt.__version__}...')
+        assert im.device.type != 'cpu', 'export running on CPU but must be on GPU, i.e. `python export.py --device 0`'
+
+        logger = trt.Logger(trt.Logger.INFO)
+        if verbose:
+            logger.min_severity = trt.Logger.Severity.VERBOSE
+
+        builder = trt.Builder(logger)
+        config = builder.create_builder_config()
+        config.max_workspace_size = workspace * 1 << 30
+        flag = (1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        network = builder.create_network(flag)
+        half &= builder.platform_has_fast_fp16
+        if half:
+            config.set_flag(trt.BuilderFlag.FP16)
+            LOGGER.info(f'{prefix} building FP{16 if half else 32} engine')
+        else:
+            LOGGER.info(f'{prefix} FP16 is not supported. Force back to FP32')
+            model, im = model.float(), im.float()  # back to FP32
+
         if trt.__version__[0] == '7':  # TensorRT 7 handling https://github.com/ultralytics/yolov5/issues/6012
             grid = model.model[-1].anchor_grid
             model.model[-1].anchor_grid = [a[..., :1, :1, :] for a in grid]
@@ -205,22 +225,10 @@ def export_engine(model, im, file, train, half, simplify, workspace=4, verbose=F
         else:  # TensorRT >= 8
             check_version(trt.__version__, '8.0.0', hard=True)  # require tensorrt>=8.0.0
             export_onnx(model, im, file, 13, train, False, simplify)  # opset 13
-        onnx = file.with_suffix('.onnx')
 
-        LOGGER.info(f'\n{prefix} starting export with TensorRT {trt.__version__}...')
-        assert im.device.type != 'cpu', 'export running on CPU but must be on GPU, i.e. `python export.py --device 0`'
+        onnx = file.with_suffix('.onnx')
         assert onnx.exists(), f'failed to export ONNX file: {onnx}'
         f = file.with_suffix('.engine')  # TensorRT engine file
-        logger = trt.Logger(trt.Logger.INFO)
-        if verbose:
-            logger.min_severity = trt.Logger.Severity.VERBOSE
-
-        builder = trt.Builder(logger)
-        config = builder.create_builder_config()
-        config.max_workspace_size = workspace * 1 << 30
-
-        flag = (1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-        network = builder.create_network(flag)
         parser = trt.OnnxParser(network, logger)
         if not parser.parse_from_file(str(onnx)):
             raise RuntimeError(f'failed to load ONNX file: {onnx}')
@@ -233,10 +241,6 @@ def export_engine(model, im, file, train, half, simplify, workspace=4, verbose=F
         for out in outputs:
             LOGGER.info(f'{prefix}\toutput "{out.name}" with shape {out.shape} and dtype {out.dtype}')
 
-        half &= builder.platform_has_fast_fp16
-        LOGGER.info(f'{prefix} building FP{16 if half else 32} engine in {f}')
-        if half:
-            config.set_flag(trt.BuilderFlag.FP16)
         with builder.build_engine(network, config) as engine, open(f, 'wb') as t:
             t.write(engine.serialize())
         LOGGER.info(f'{prefix} export success, saved as {f} ({file_size(f):.1f} MB)')
