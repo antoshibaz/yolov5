@@ -427,6 +427,10 @@ class DetectMultiBackend(nn.Module):
             request.infer()
             y = request.output_blobs['output'].buffer  # name=next(iter(request.output_blobs))
         elif self.engine:  # TensorRT
+            # last batch size in dataloader may be not equal assigned batch size
+            # * it's problem for tensorrt model with fixed batch size
+            #   approaches: drop last invalid batch, expand invalid batch to assigned batch size
+            # * for tensorrt with dynamic batch size it is ok
             if self.use_tensorrtx:
                 im = torch.reshape(im, (im.shape[1], im.shape[2], im.shape[3]))
                 assert im.shape == self.bindings[self.trt_input_name].shape, (
@@ -441,7 +445,7 @@ class DetectMultiBackend(nn.Module):
 
             if self.use_tensorrtx:
                 # implicit exec
-                self.context.execute(batch_size=1, bindings=list(self.binding_addrs.values()))
+                self.context.execute(batch_size=self.batch_size, bindings=list(self.binding_addrs.values()))
                 y = self.bindings[self.trt_output_name].data
 
                 # adapt tensorrtx yolov5 pred data to this impl
