@@ -334,6 +334,7 @@ class DetectMultiBackend(nn.Module):
             network = core.read_network(model=w, weights=Path(w).with_suffix('.bin'))  # *.xml, *.bin paths
             executable_network = core.load_network(network, device_name='CPU', num_requests=1)
         elif engine:  # TensorRT
+            stride = 32
             LOGGER.info(f'Loading {w} for TensorRT inference...')
             import tensorrt as trt  # https://developer.nvidia.com/nvidia-tensorrt-download
             check_version(trt.__version__, '7.0.0', hard=True)  # require tensorrt>=7.0.0
